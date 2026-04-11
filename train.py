@@ -13,6 +13,7 @@ in that case it writes output to ./Results/<timestamp>/ beside this file.
 
 import json
 import os
+import sys
 import time
 from typing import Dict, List, Tuple
 
@@ -125,6 +126,12 @@ def train_model(
                 f"Test Acc {test_acc:.4f} | "
                 f"Val F1 {val_f1v:.4f}"
             )
+            # Also print to stderr so it appears in terminal even when stdout is redirected
+            print(
+                f"[{model_name}] Epoch {epoch + 1}/{epochs} | "
+                f"Val Acc: {val_acc:.4f} | Best: {best_val_acc:.4f}",
+                file=sys.stderr
+            )
 
     elapsed = time.time() - start_time
 
@@ -212,9 +219,12 @@ def generate_plots(histories: Dict[str, Dict], plots_dir: str) -> None:
 # run_experiment — primary entry point called by Project_Run.py
 # ---------------------------------------------------------------------------
 
-def run_experiment(config: dict, run_dir: str) -> dict:
+def run_experiment(config: dict, run_dir: str, data=None) -> dict:
     """
     Train all three models under *config* and save artefacts into *run_dir*.
+    
+    If data is None, it will be loaded from disk (may cause deadlocks on macOS).
+    Pass pre-loaded data to avoid redirect context issues.
 
     Directory layout written by this function:
         <run_dir>/
@@ -226,40 +236,54 @@ def run_experiment(config: dict, run_dir: str) -> dict:
     Project_Run.py can write hyperparameters.txt, config.json, and
     final_metrics.csv without needing to re-run training.
     """
+    
+    # If data wasn't pre-loaded, load it now (but be aware this may deadlock on macOS
+    # when called inside a redirect context)
+    if data is None:
+        print("[PRE-LOAD] Loading dataset inside run_experiment (may hang on macOS)...", 
+              file=sys.stderr, flush=True)
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        data_root    = os.path.join(project_root, "data", "Cora")
+        from torch_geometric.datasets import Planetoid
+        from torch_geometric.transforms import NormalizeFeatures
+        
+        dataset = Planetoid(
+            root=data_root,
+            name=config.get("dataset_name", "Cora"),
+            transform=NormalizeFeatures(),
+        )
+        data = dataset[0]
+        print("[PRE-LOAD] Dataset loaded successfully", file=sys.stderr, flush=True)
+    else:
+        print("[PRE-LOAD] Using pre-loaded dataset", file=sys.stderr, flush=True)
+    
     plots_dir   = os.path.join(run_dir, "plots")
     results_dir = os.path.join(run_dir, "results")
     os.makedirs(plots_dir,   exist_ok=True)
     os.makedirs(results_dir, exist_ok=True)
-
-    # Dataset path is always relative to the project root (where this file lives)
-    project_root = os.path.dirname(os.path.abspath(__file__))
-    data_root    = os.path.join(project_root, "data", "Cora")
-
-    dataset = Planetoid(
-        root=data_root,
-        name=config.get("dataset_name", "Cora"),
-        transform=NormalizeFeatures(),
-    )
-    data = dataset[0]
+    
+    # Get dataset info from data object
+    num_node_features = data.num_node_features if hasattr(data, 'num_node_features') else data.x.size(1)
+    num_classes = data.y.max().item() + 1 if hasattr(data.y, 'max') else len(set(data.y.tolist()))
 
     # --- Build models from config ------------------------------------------
     gcn = GCN(
-        in_channels=dataset.num_node_features,
+        in_channels=num_node_features,
         hidden_channels=config["gcn_hidden_channels"],
-        out_channels=dataset.num_classes,
+        out_channels=num_classes,
         dropout=config["gcn_dropout"],
     )
     gat = GAT(
-        in_channels=dataset.num_node_features,
+        in_channels=num_node_features,
         hidden_channels=config["gat_hidden_channels"],
-        out_channels=dataset.num_classes,
+        out_channels=num_classes,
         heads=config["gat_heads"],
         dropout=config["gat_dropout"],
     )
     gt = GraphTransformer(
-        in_channels=dataset.num_node_features,
+        in_channels=num_node_features,
         hidden_channels=config["gt_hidden_channels"],
-        out_channels=dataset.num_classes,
+        out_channels=num_classes,
         heads=config["gt_heads"],
         dropout=config["gt_dropout"],
     )
@@ -268,22 +292,28 @@ def run_experiment(config: dict, run_dir: str) -> dict:
 
     # --- Train -------------------------------------------------------------
     print("\nTraining GCN...")
+    print("[START] Training GCN", file=sys.stderr)
     gcn_history = train_model(gcn, data, "GCN",
                               epochs=epochs,
                               lr=config["gcn_lr"],
                               weight_decay=config["gcn_weight_decay"])
+    print("[DONE] GCN", file=sys.stderr)
 
     print("\nTraining GAT...")
+    print("[START] Training GAT", file=sys.stderr)
     gat_history = train_model(gat, data, "GAT",
                               epochs=epochs,
                               lr=config["gat_lr"],
                               weight_decay=config["gat_weight_decay"])
+    print("[DONE] GAT", file=sys.stderr)
 
     print("\nTraining Graph Transformer...")
+    print("[START] Training Graph Transformer", file=sys.stderr)
     gt_history  = train_model(gt,  data, "GraphTransformer",
                               epochs=epochs,
                               lr=config["gt_lr"],
                               weight_decay=config["gt_weight_decay"])
+    print("[DONE] Graph Transformer", file=sys.stderr)
 
     all_histories = {
         "GCN":              gcn_history,
@@ -292,14 +322,18 @@ def run_experiment(config: dict, run_dir: str) -> dict:
     }
 
     # --- Save per-model JSON histories -------------------------------------
+    print("[INFO] Saving model histories...", file=sys.stderr)
     save_json(gcn_history, os.path.join(results_dir, "gcn_history.json"))
     save_json(gat_history, os.path.join(results_dir, "gat_history.json"))
     save_json(gt_history,  os.path.join(results_dir, "gt_history.json"))
 
     # --- Generate all plots ------------------------------------------------
+    print("[INFO] Generating plots...", file=sys.stderr)
     generate_plots(all_histories, plots_dir)
+    print("[INFO] Plots saved", file=sys.stderr)
 
     # --- Build and save run_summary.json -----------------------------------
+    print("[INFO] Saving run summary...", file=sys.stderr)
     summary = {
         "dataset": config.get("dataset_name", "Cora"),
         "epochs":  epochs,
@@ -316,6 +350,7 @@ def run_experiment(config: dict, run_dir: str) -> dict:
     }
     save_json(summary, os.path.join(run_dir, "run_summary.json"))
 
+    print("[INFO] Experiment complete!", file=sys.stderr)
     return summary
 
 

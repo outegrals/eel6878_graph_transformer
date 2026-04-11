@@ -33,6 +33,16 @@ import datetime
 import os
 from pprint import pformat
 
+# macOS OpenMP runtime conflicts can occur when multiple libraries bring in
+# `libomp.dylib`. This workaround allows the script to continue executing
+# in environments where the runtime is already initialized by another library.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+# Import torch and torch_geometric early to avoid import issues
+import torch
+from torch_geometric.datasets import Planetoid
+from torch_geometric.transforms import NormalizeFeatures
+
 from train import run_experiment, save_json
 
 
@@ -92,6 +102,16 @@ def main() -> None:
     run_dir      = make_run_directory(project_root)
     log_path     = os.path.join(run_dir, "console_log.txt")
 
+    print(f"Run directory: {run_dir}")
+    print(f"Logging to: {log_path}")
+    
+    # IMPORTANT: Pre-load dataset BEFORE entering redirect context
+    print("Pre-loading dataset...", flush=True)
+    data_root = os.path.join(project_root, "data", "Cora")
+    dataset = Planetoid(root=data_root, name="Cora", transform=NormalizeFeatures())
+    data = dataset[0]
+    print(f"Dataset pre-loaded: {data.num_nodes} nodes, {data.num_edges} edges\n", flush=True)
+
     # Edit this dict to change hyperparameters — nothing else needs touching
     config = {
         "dataset_name":        "Cora",
@@ -123,26 +143,35 @@ def main() -> None:
     summary = None
     try:
         with (
-            open(log_path, "w", encoding="utf-8") as log_file,
+            open(log_path, "w", encoding="utf-8", buffering=1) as log_file,
             contextlib.redirect_stdout(log_file),
             contextlib.redirect_stderr(log_file),
         ):
-            print("Graph Project Run")
-            print("=" * 60)
-            print(f"Run directory: {run_dir}")
-            print("\nConfiguration:")
-            print(pformat(config))
-            print("\nStarting experiment...\n")
+            try:
+                print("Graph Project Run", flush=True)
+                print("=" * 60)
+                print(f"Run directory: {run_dir}")
+                print("\nConfiguration:")
+                print(pformat(config))
+                print("\nStarting experiment...\n")
 
-            summary = run_experiment(config, run_dir)
+                summary = run_experiment(config, run_dir, data)
 
-            print("\nFinal Summary")
-            print("=" * 60)
-            for model_name, metrics in summary["models"].items():
-                print(f"\n{model_name}")
-                for key, value in metrics.items():
-                    print(f"  {key}: {value}")
-            print("\nRun completed successfully.")
+                print("\nFinal Summary")
+                print("=" * 60)
+                for model_name, metrics in summary["models"].items():
+                    print(f"\n{model_name}")
+                    for key, value in metrics.items():
+                        print(f"  {key}: {value}")
+                print("\nRun completed successfully.")
+                
+            except Exception as inner_exc:
+                # If something fails inside the redirected context, still try to log it
+                print(f"\nEXCEPTION INSIDE REDIRECT: {type(inner_exc).__name__}")
+                print(f"Message: {inner_exc}")
+                import traceback
+                traceback.print_exc()
+                raise
 
     except Exception as exc:
         # If training crashes, surface the error to the terminal instead of
