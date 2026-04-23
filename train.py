@@ -17,6 +17,8 @@ import sys
 import time
 from typing import Dict, List, Tuple
 
+import psutil
+
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
@@ -93,6 +95,9 @@ def train_model(
     best_test_f1  = 0.0
     start_time    = time.time()
 
+    process       = psutil.Process(os.getpid())
+    peak_memory_mb = 0.0
+
     for epoch in range(epochs):
         model.train()
         optimizer.zero_grad()
@@ -102,6 +107,9 @@ def train_model(
         optimizer.step()
 
         train_acc, val_acc, test_acc, train_f1v, val_f1v, test_f1v = evaluate(model, data)
+
+        current_memory_mb = process.memory_info().rss / 1024 ** 2
+        peak_memory_mb    = max(peak_memory_mb, current_memory_mb)
 
         history["train_loss"].append(loss.item())
         history["train_acc"].append(train_acc)
@@ -140,6 +148,7 @@ def train_model(
     history["best_val_f1"]           = best_val_f1
     history["best_test_f1"]          = best_test_f1
     history["training_time_seconds"] = round(elapsed, 2)
+    history["peak_memory_mb"]        = round(peak_memory_mb, 2)
 
     return history
 
@@ -213,6 +222,23 @@ def generate_plots(histories: Dict[str, Dict], plots_dir: str) -> None:
     _plot_comparison(histories, "test_acc",   "Test Accuracy Comparison",         "Accuracy", os.path.join(plots_dir, "comparison_test_acc.png"))
     _plot_comparison(histories, "train_loss", "Training Loss Comparison",         "Loss",     os.path.join(plots_dir, "comparison_train_loss.png"))
     _plot_comparison(histories, "val_f1",     "Validation F1 Comparison (Macro)", "F1",       os.path.join(plots_dir, "comparison_val_f1.png"))
+
+
+def plot_attention_histogram(attn_weights, title: str, filepath: str) -> None:
+    """Plot a histogram of attention weights returned by get_attention_weights()."""
+    _edge_index, alpha = attn_weights
+    values = alpha.detach().cpu().flatten().numpy()
+
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    plt.figure(figsize=(8, 5))
+    plt.hist(values, bins=50)
+    plt.title(title)
+    plt.xlabel("Attention Weight")
+    plt.ylabel("Frequency")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(filepath, dpi=300)
+    plt.close()
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +347,22 @@ def run_experiment(config: dict, run_dir: str, data=None) -> dict:
         "GraphTransformer": gt_history,
     }
 
+    # --- Generate attention-weight histograms --------------------------------
+    print("[INFO] Generating attention plots...", file=sys.stderr)
+    gat_attn = gat.get_attention_weights(data.x, data.edge_index)
+    plot_attention_histogram(
+        gat_attn,
+        "GAT Attention Weight Distribution",
+        os.path.join(plots_dir, "gat_attention_histogram.png"),
+    )
+    gt_attn = gt.get_attention_weights(data.x, data.edge_index)
+    plot_attention_histogram(
+        gt_attn,
+        "Graph Transformer Attention Weight Distribution",
+        os.path.join(plots_dir, "gt_attention_histogram.png"),
+    )
+    print("[INFO] Attention plots saved", file=sys.stderr)
+
     # --- Save per-model JSON histories -------------------------------------
     print("[INFO] Saving model histories...", file=sys.stderr)
     save_json(gcn_history, os.path.join(results_dir, "gcn_history.json"))
@@ -344,6 +386,7 @@ def run_experiment(config: dict, run_dir: str, data=None) -> dict:
                 "best_val_f1":           h["best_val_f1"],
                 "best_test_f1":          h["best_test_f1"],
                 "training_time_seconds": h["training_time_seconds"],
+                "peak_memory_mb":        h["peak_memory_mb"],
             }
             for name, h in all_histories.items()
         },

@@ -36,3 +36,14 @@ class GAT(nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.gat2(x, edge_index)
         return x
+
+    def get_attention_weights(self, x: torch.Tensor, edge_index: torch.Tensor):
+        self.eval()
+        with torch.no_grad():
+            x = F.dropout(x, p=self.dropout, training=False)
+            _, attn = self.gat1(
+                x,
+                edge_index,
+                return_attention_weights=True,
+            )
+        return attn

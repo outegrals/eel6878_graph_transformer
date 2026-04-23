@@ -25,6 +25,7 @@
     <Compile Include="dataset_check.py" />
     <Compile Include="gcn_model.py" />
     <Compile Include="gat_model.py" />
+    <Compile Include="graph_transformer_model.py" />
     <Compile Include="project_run.py" />
     <Compile Include="train.py" />
   </ItemGroup>

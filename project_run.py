@@ -80,6 +80,7 @@ def write_metrics_csv(summary: dict, filepath: str) -> None:
             "Best Val F1",
             "Best Test F1",
             "Training Time (s)",
+            "Peak Memory (MB)",
         ])
         for model_name, metrics in summary["models"].items():
             writer.writerow([
@@ -89,6 +90,7 @@ def write_metrics_csv(summary: dict, filepath: str) -> None:
                 metrics["best_val_f1"],
                 metrics["best_test_f1"],
                 metrics["training_time_seconds"],
+                metrics["peak_memory_mb"],
             ])
 
 
